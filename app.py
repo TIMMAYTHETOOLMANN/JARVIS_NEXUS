@@ -263,8 +263,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 )
                 return response
         except Exception as e:
-            logger.error(f"Error during LLM inference: {e}")
-            raise HTTPException(status_code=500, detail=f"LLM Inference Error: {e}")
+            logger.exception("Error during LLM inference")
+            raise HTTPException(status_code=500, detail="An internal error occurred during LLM inference.")
     else:
         # Fallback/Mock Mode if GGUF is not running locally (e.g. while testing)
         logger.info("Inference running in Fallback/Mock mode (GGUF model not loaded).")
@@ -366,8 +366,8 @@ async def text_to_speech_endpoint(request: SpeechRequest):
             raise HTTPException(status_code=500, detail="Audio file was generated but is empty.")
             
     except Exception as e:
-        logger.error(f"Error in TTS generation: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS Generation failed: {str(e)}")
+        logger.exception("Error in TTS generation")
+        raise HTTPException(status_code=500, detail="An error occurred during Text-to-Speech generation.")
 
 
 @app.get("/voices")
@@ -387,7 +387,7 @@ def direct_scrape(url: str):
     if res.get("success"):
         return res
     else:
-        raise HTTPException(status_code=400, detail=res.get("error"))
+        raise HTTPException(status_code=400, detail="Failed to scrape the specified URL. Please check the server logs for more details.")
 
 
 if __name__ == "__main__":
