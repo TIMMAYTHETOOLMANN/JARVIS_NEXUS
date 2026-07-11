@@ -1,0 +1,45 @@
+{
+  "providerOverrides": {
+    "custom-api": {
+      "name": "JARVIS-Nexus-API",
+      "baseUrl": "http://YOUR_LOCAL_IP_ADDRESS:8000/v1",
+      "apiKey": "jarvis-nexus-token",
+      "chatFlags": [
+        "--context-window", "4096"
+      ],
+      "envVars": {
+        "MODEL_PATH": "./Mythos-nano-OBLITERATED.i1-Q6_K.gguf"
+      }
+    }
+  },
+  "models": {
+    "custom": [
+      {
+        "id": "Mythos-nano-OBLITERATED.i1-Q6_K.gguf",
+        "name": "JARVIS (Mythos-nano-OBLITERATED)",
+        "provider": "custom-api"
+      }
+    ]
+  },
+  "speech": {
+    "enabled": true,
+    "provider": "custom-api",
+    "voice": "en-GB-RyanNeural",
+    "speed": 1.0,
+    "options": {
+      "jarvis": "en-GB-RyanNeural",
+      "stark": "en-US-BrianNeural",
+      "pepper": "en-US-EmmaNeural",
+      "onyx": "en-GB-RyanNeural",
+      "alloy": "en-US-BrianNeural",
+      "echo": "en-US-AndrewNeural",
+      "fable": "en-GB-ThomasNeural",
+      "nova": "en-US-EmmaNeural",
+      "shimmer": "en-US-AvaNeural"
+    }
+  },
+  "scm": {
+    "github": true,
+    "azure-devops": false
+  }
+}
