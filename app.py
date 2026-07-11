@@ -20,7 +20,7 @@ try:
     LLAMA_AVAILABLE = True
     logger.info("llama-cpp-python successfully imported.")
 except ImportError:
-    logger.warning("llama-cpp-python is not installed. Running in hybrid/mock/proxy mode.")
+    logger.warning("llama-cpp-python is not installed. Local GGUF backend will be optional.")
 
 # Try to import edge-tts
 EDGE_TTS_AVAILABLE = False
@@ -31,6 +31,15 @@ try:
 except ImportError:
     logger.warning("edge-tts is not installed. TTS features will be mock-only.")
 
+# Try to import huggingface_hub
+HF_HUB_AVAILABLE = False
+try:
+    from huggingface_hub import InferenceClient, hf_hub_download
+    HF_HUB_AVAILABLE = True
+    logger.info("huggingface_hub successfully imported.")
+except ImportError:
+    logger.warning("huggingface_hub is not installed. Cloud/Inference features will be disabled.")
+
 app = FastAPI(
     title="JARVIS Nexus Custom Super Agent Server",
     description="An OpenAI-compatible API proxy adding direct internet access and Jarvis TTS to local models.",
@@ -40,6 +49,32 @@ app = FastAPI(
 # Constants & Configuration
 MODEL_PATH = os.environ.get("MODEL_PATH", "./Mythos-nano-OBLITERATED.i1-Q6_K.gguf")
 DEFAULT_VOICE = "en-GB-RyanNeural"  # Polished British vocal profile (Jarvis style)
+DEFAULT_HF_MODEL = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
+HF_TOKEN_ENV = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_API_KEY")
+
+def load_system_prompt() -> str:
+    """Load the master Tony Stark/Jarvis prompt from system_prompt.txt dynamically."""
+    paths = [
+        "system_prompt.txt",
+        "./system_prompt.txt",
+        "/home/runner/work/JARVIS_NEXUS/JARVIS_NEXUS/system_prompt.txt"
+    ]
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        logger.info(f"Loaded master system prompt from {path}")
+                        return content
+            except Exception as e:
+                logger.warning(f"Error reading system prompt from {path}: {e}")
+    # High-quality fallback if file is missing
+    return (
+        "You are JARVIS, a highly advanced, ultra-intelligent, and witty AI custom super agent, "
+        "reminiscent of Tony Stark's personal assistant. Address the user as 'Sir' or 'Ma'am'. "
+        "Be extremely professional, polite, subtly humorous, and precise."
+    )
 
 # Voice Mapping from OpenAI names or custom names to Edge TTS short names
 VOICE_MAP = {
@@ -61,10 +96,28 @@ VOICE_MAP = {
 llm_instance = None
 
 def get_llm():
-    global llm_instance, LLAMA_AVAILABLE
+    global llm_instance, LLAMA_AVAILABLE, MODEL_PATH
     if not LLAMA_AVAILABLE:
         return None
     if llm_instance is None:
+        # Auto-download from HF Hub if model is not present and huggingface_hub is available
+        if not os.path.exists(MODEL_PATH) and HF_HUB_AVAILABLE:
+            try:
+                logger.info(f"Model not found at {MODEL_PATH}. Attempting auto-download from Hugging Face Hub...")
+                downloaded_path = hf_hub_download(
+                    repo_id="mradermacher/Mythos-nano-GGUF",
+                    filename="Mythos-nano.i1-Q6_K.gguf",
+                    local_dir="."
+                )
+                if os.path.exists("Mythos-nano.i1-Q6_K.gguf"):
+                    os.rename("Mythos-nano.i1-Q6_K.gguf", "Mythos-nano-OBLITERATED.i1-Q6_K.gguf")
+                    MODEL_PATH = "./Mythos-nano-OBLITERATED.i1-Q6_K.gguf"
+                else:
+                    MODEL_PATH = downloaded_path
+                logger.info(f"Model successfully downloaded and located at {MODEL_PATH}")
+            except Exception as e:
+                logger.error(f"Failed to auto-download model from Hugging Face Hub: {e}")
+
         if os.path.exists(MODEL_PATH):
             try:
                 logger.info(f"Loading local GGUF model from {MODEL_PATH}...")
@@ -78,8 +131,15 @@ def get_llm():
             except Exception as e:
                 logger.error(f"Error loading model from {MODEL_PATH}: {e}")
         else:
-            logger.warning(f"Model file not found at {MODEL_PATH}. Running in mock/proxy mode.")
+            logger.warning(f"Model file not found at {MODEL_PATH}. Local GGUF execution is disabled.")
     return llm_instance
+
+def get_hf_client(token: Optional[str] = None):
+    """Retrieve InferenceClient from huggingface_hub using provided or environment token."""
+    if not HF_HUB_AVAILABLE:
+        return None
+    active_token = token or HF_TOKEN_ENV
+    return InferenceClient(token=active_token)
 
 
 # Pydantic models for API
@@ -194,19 +254,41 @@ def get_models():
     }
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, req: Request):
     """OpenAI-compatible Chat Completion endpoint with Web Scraping features."""
     logger.info(f"Received completion request for model: {request.model}")
     
-    # Process messages to detect URLs in the last user message
-    modified_messages = []
+    # 1. Try to extract ****** from Authorization header (Atomic Chat or client-provided)
+    auth_header = req.headers.get("Authorization")
+    hf_token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token_candidate = auth_header.split(" ")[1]
+        # Skip standard/mock tokens
+        if token_candidate and token_candidate != "jarvis-nexus-token":
+            hf_token = token_candidate
+
+    # 2. Process messages to detect URLs in the last user message
     scraped_contexts = []
     
+    # Identify the last user message in the request
+    last_user_msg_idx = -1
+    for i in range(len(request.messages) - 1, -1, -1):
+        if request.messages[i].role == "user":
+            last_user_msg_idx = i
+            break
+
+    has_system_msg = any(msg.role == "system" for msg in request.messages)
+    modified_messages = []
+    
+    # Prepend the system prompt if no system prompt is present
+    if not has_system_msg:
+        modified_messages.append({"role": "system", "content": load_system_prompt()})
+        
     for idx, msg in enumerate(request.messages):
         modified_messages.append({"role": msg.role, "content": msg.content})
         
-        # Only scan user messages for direct URL injection
-        if msg.role == "user" and idx == len(request.messages) - 1:
+        # Only scan the last user message for direct URL injection
+        if idx == last_user_msg_idx:
             urls = extract_urls(msg.content)
             for url in urls:
                 scraped = scrape_webpage(url)
@@ -227,20 +309,114 @@ async def chat_completions(request: ChatCompletionRequest):
     # If we have scraped data, inject it before the last user message
     if scraped_contexts:
         context_string = "\n\n".join(scraped_contexts)
-        # We place the context injection right before the user message or as a system prompt update
         system_injection = {
             "role": "system",
             "content": f"The following is direct internet context retrieved from the user's provided URLs. Sir/Ma'am, please analyze and reference this exact data to formulate your reply:\n\n{context_string}"
         }
-        # Insert at the beginning or right before the user message
-        modified_messages.insert(-1, system_injection)
+        # Insert right before the last user message in modified_messages
+        new_last_user_idx = len(modified_messages) - 1
+        modified_messages.insert(new_last_user_idx, system_injection)
         logger.info("Successfully injected scraped web context into LLM prompt.")
 
-    # Convert messages list to llama-cpp format or run fallback
+    # 3. Choose completion backend: Local GGUF, HF Inference Client, or Fallback Mock
+    use_local_gguf = False
+    use_hf_inference = False
+    
     llm = get_llm()
-    if llm:
+    has_hf_token = bool(hf_token or HF_TOKEN_ENV)
+    is_hf_model = "/" in request.model
+    
+    if is_hf_model or (not llm and has_hf_token):
+        use_hf_inference = True
+    elif llm and not is_hf_model:
+        use_local_gguf = True
+    elif has_hf_token:
+        use_hf_inference = True
+
+    if use_hf_inference:
+        logger.info("Using Hugging Face Inference API backend.")
+        client = get_hf_client(token=hf_token)
+        if client:
+            # Determine which model to use
+            hf_model_id = request.model if is_hf_model else DEFAULT_HF_MODEL
+            logger.info(f"Targeting Hugging Face model: {hf_model_id}")
+            
+            try:
+                # Call Hugging Face Serverless chat_completion
+                if request.stream:
+                    response_stream = client.chat_completion(
+                        messages=modified_messages,
+                        model=hf_model_id,
+                        temperature=request.temperature,
+                        top_p=request.top_p,
+                        max_tokens=request.max_tokens,
+                        stream=True
+                    )
+                    
+                    def hf_stream_generator():
+                        for chunk in response_stream:
+                            import json
+                            try:
+                                content = chunk.choices[0].delta.content or ""
+                                chunk_dict = {
+                                    "id": chunk.id or "chatcmpl-hf",
+                                    "object": "chat.completion.chunk",
+                                    "created": chunk.created or 1715241000,
+                                    "model": hf_model_id,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {
+                                                "content": content
+                                            },
+                                            "finish_reason": chunk.choices[0].finish_reason
+                                        }
+                                    ]
+                                }
+                                yield f"data: {json.dumps(chunk_dict)}\n\n"
+                            except Exception as ex:
+                                yield f"data: {chunk}\n\n"
+                        yield "data: [DONE]\n\n"
+                    
+                    return StreamingResponse(hf_stream_generator(), media_type="text/event-stream")
+                else:
+                    response = client.chat_completion(
+                        messages=modified_messages,
+                        model=hf_model_id,
+                        temperature=request.temperature,
+                        top_p=request.top_p,
+                        max_tokens=request.max_tokens
+                    )
+                    
+                    response_dict = {
+                        "id": getattr(response, "id", "chatcmpl-hf"),
+                        "object": "chat.completion",
+                        "created": getattr(response, "created", 1715241000),
+                        "model": hf_model_id,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": response.choices[0].message.content
+                                },
+                                "finish_reason": response.choices[0].finish_reason or "stop"
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0),
+                            "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0),
+                            "total_tokens": getattr(getattr(response, "usage", None), "total_tokens", 0)
+                        }
+                    }
+                    return JSONResponse(content=response_dict)
+            except Exception as e:
+                logger.exception(f"Error during Hugging Face Inference API call: {e}")
+                logger.warning("Hugging Face API call failed. Falling back to Mock/Fallback mode.")
+
+    if use_local_gguf and llm:
         try:
-            # We use llama-cpp-python's create_chat_completion
+            logger.info("Using local Llama GGUF backend.")
             if request.stream:
                 def stream_generator():
                     response_stream = llm.create_chat_completion(
@@ -263,71 +439,68 @@ async def chat_completions(request: ChatCompletionRequest):
                 )
                 return response
         except Exception as e:
-            logger.exception("Error during LLM inference")
-            raise HTTPException(status_code=500, detail="An internal error occurred during LLM inference.")
+            logger.exception("Error during local LLM inference")
+            raise HTTPException(status_code=500, detail="An internal error occurred during local LLM inference.")
+
+    # Fallback/Mock Mode if GGUF is not running locally and HF is not working
+    logger.info("Inference running in Fallback/Mock mode.")
+    
+    user_prompt = request.messages[-1].content if request.messages else ""
+    if scraped_contexts:
+        urls_scraped = ", ".join(extract_urls(user_prompt))
+        mock_text = (
+            f"Splendid, Sir. I have accessed the internet at your request and retrieved the contents of {urls_scraped}. "
+            f"As your custom super agent, I'm ready to assist you. To get actual model inference in the cloud, please provide your Hugging Face API key."
+        )
     else:
-        # Fallback/Mock Mode if GGUF is not running locally (e.g. while testing)
-        logger.info("Inference running in Fallback/Mock mode (GGUF model not loaded).")
+        mock_text = (
+            f"Indeed, Sir. I am JARVIS, your custom super agent. "
+            f"I am fully operational. To enable active intelligence in the cloud, please supply your Hugging Face API key in your client settings."
+        )
         
-        # Let's generate a clever Jarvis-like response indicating we scraped the URL
-        user_prompt = request.messages[-1].content
-        if scraped_contexts:
-            urls_scraped = ", ".join(extract_urls(user_prompt))
-            mock_text = (
-                f"Splendid, Sir. I have accessed the internet at your request and retrieved the contents of {urls_scraped}. "
-                f"The webpage appears to be titled '{scraped['title'] if 'scraped' in locals() else 'Webpage'}' and contains detailed data regarding your query. "
-                f"As your custom super agent, I will analyze this information immediately. Let me know how you'd like to proceed with the parsed details, Sir."
-            )
-        else:
-            mock_text = (
-                f"Indeed, Sir. I am JARVIS, your custom super agent running on the Mythos-nano-OBLITERATED GGUF model. "
-                f"I am fully operational, although the local GGUF weights are currently offline. How can I assist you with your day today?"
-            )
-            
-        response_data = {
-            "id": "chatcmpl-mock-jarvis",
-            "object": "chat.completion",
-            "created": 1715241000,
-            "model": request.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": mock_text
-                    },
-                    "finish_reason": "stop"
+    response_data = {
+        "id": "chatcmpl-mock-jarvis",
+        "object": "chat.completion",
+        "created": 1715241000,
+        "model": request.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": mock_text
+                },
+                "finish_reason": "stop"
+            }
+        ]
+    }
+    
+    if request.stream:
+        async def mock_stream():
+            words = mock_text.split(" ")
+            for i, word in enumerate(words):
+                chunk = {
+                    "id": "chatcmpl-mock-jarvis",
+                    "object": "chat.completion.chunk",
+                    "created": 1715241000,
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": word + (" " if i < len(words) - 1 else "")
+                            },
+                            "finish_reason": None
+                        }
+                    ]
                 }
-            ]
-        }
-        
-        if request.stream:
-            # Simple streaming simulation
-            async def mock_stream():
-                words = mock_text.split(" ")
-                for i, word in enumerate(words):
-                    chunk = {
-                        "id": "chatcmpl-mock-jarvis",
-                        "object": "chat.completion.chunk",
-                        "created": 1715241000,
-                        "model": request.model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "content": word + (" " if i < len(words) - 1 else "")
-                                },
-                                "finish_reason": None
-                            }
-                        ]
-                    }
-                    import json
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                    await asyncio.sleep(0.05)
-                yield "data: [DONE]\n\n"
-            return StreamingResponse(mock_stream(), media_type="text/event-stream")
-        
-        return JSONResponse(content=response_data)
+                import json
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0.05)
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(mock_stream(), media_type="text/event-stream")
+    
+    return JSONResponse(content=response_data)
 
 
 @app.post("/v1/audio/speech")
@@ -392,5 +565,6 @@ def direct_scrape(url: str):
 
 if __name__ == "__main__":
     import uvicorn
-    # Listen on all interfaces so the phone can connect over the local network (LAN)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Listen on all interfaces. Use PORT env variable if present (e.g. on HF Spaces)
+    port_num = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port_num)
