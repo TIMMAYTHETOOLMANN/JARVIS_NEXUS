@@ -147,11 +147,11 @@ def scrape_webpage(url: str) -> Dict[str, Any]:
             "content": truncated_content
         }
     except Exception as e:
-        logger.error(f"Error scraping {url}: {e}")
+        logger.exception(f"Error scraping {url}")
         return {
             "success": False,
             "url": url,
-            "error": str(e)
+            "error": "Failed to retrieve webpage content"
         }
 
 
