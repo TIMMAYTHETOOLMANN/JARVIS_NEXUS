@@ -1,3 +1,13 @@
+---
+title: JARVIS Nexus Custom Super Agent
+emoji: 🤖
+colorFrom: red
+colorTo: blue
+sdk: fastapi
+app_file: app.py
+pinned: false
+---
+
 # JARVIS Nexus: Custom Super Agent Server 🛠️🤖
 
 Welcome to **JARVIS Nexus**! This repository transforms a local quantized Hugging Face model on your mobile device or local network into a fully-fledged, production-ready Custom Super Agent with all the "bells and whistles," behaving identically to **ChatGPT** but retaining a witty, intelligent, supportive **Tony Stark / Jarvis** persona.
@@ -88,6 +98,42 @@ To configure your phone's **Atomic Chat** app to communicate with JARVIS:
    http://<YOUR_LOCAL_IP_ADDRESS>:8000/v1
    ```
 3. Set your selected model ID to `Mythos-nano-OBLITERATED.i1-Q6_K.gguf`.
+
+---
+
+## ☁️ Deployment to Hugging Face Spaces (Cloud / Serverless)
+
+You can host **JARVIS Nexus** completely in the cloud on **Hugging Face Spaces** for free! 
+In this mode, the server will leverage the free, high-performance **Hugging Face Serverless Inference API** as its brain instead of running a heavy local GGUF model. This eliminates memory limits, does not require compiling C++ packages, and is highly responsive with zero cold-starts!
+
+### Step 1: Create a Hugging Face Space
+1. Go to [huggingface.co/spaces](https://huggingface.co/spaces) and click **Create new Space**.
+2. Name your Space (e.g., `jarvis-nexus`).
+3. Select **FastAPI** as the Space SDK (this repository has built-in support for Hugging Face's native FastAPI SDK).
+4. Set the space visibility to **Public** or **Private** (Private is recommended to protect your API usage and tokens).
+
+### Step 2: Upload the Files
+Choose one of the following methods to push this repository to your Hugging Face Space:
+- **Direct Upload**: Go to the **Files** tab of your Space, click **Add file** -> **Upload files**, and upload the following files from your local repository: `app.py`, `requirements.txt`, `system_prompt.txt`, `.huggingface.yml`, and `README.md`.
+- **Git Push**: Clone your Hugging Face Space repository locally and push this codebase to your Space's git remote.
+
+### Step 3: Configure Environment Variables (Optional but Recommended)
+In your Hugging Face Space's **Settings** tab, scroll down to **Variables and secrets**:
+- **`HF_TOKEN`** (Secret): Your Hugging Face API Token (get one from `huggingface.co/settings/tokens`). This enables calling larger/gated models.
+- **`HF_MODEL_ID`** (Variable): The model to use for completions. Defaults to `Qwen/Qwen2.5-7B-Instruct`, but you can use any chat-supported model on Hugging Face (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `mistralai/Mistral-7B-Instruct-v0.3`, etc.).
+
+### Step 4: Configure Atomic Chat
+Once your Space is built and running:
+1. Copy the Direct URL of your Space (which looks like `https://<your-username>-<your-space-name>.hf.space`).
+2. Open **Atomic Chat** on your mobile device.
+3. Apply the settings from `.atomic/settings.json`, modifying the **Custom API Provider** base URL to:
+   ```
+   https://<your-username>-<your-space-name>.hf.space/v1
+   ```
+4. Set the **API Key** in Atomic Chat to your **Hugging Face API Token** (`hf_...`).
+5. Select any model ID or set it to your Hugging Face Model ID!
+
+Now, you have a private, fully-featured Custom Super Agent with direct internet access and high-fidelity text-to-speech accessible securely from anywhere in the world!
 
 ---
 

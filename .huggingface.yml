@@ -1,0 +1,7 @@
+title: JARVIS Nexus
+emoji: 🤖
+colorFrom: red
+colorTo: blue
+sdk: fastapi
+app_file: app.py
+pinned: false
